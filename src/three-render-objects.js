@@ -183,11 +183,21 @@ export default Kapsule({
     tbControls: state => state.controls // to be deprecated
   },
 
-  stateInit: () => ({
-    scene: new three.Scene(),
-    camera: new three.PerspectiveCamera(),
-    clock: new three.Clock()
-  }),
+  stateInit: options => {
+    let camera;
+	  if (!options || !options.numDimensions || options.numDimensions >= 3) {
+        camera = new three.PerspectiveCamera();
+	  } else {
+      let aspectRatio = window.innerWidth / window.innerHeight;
+      let frustumSize = 1000;
+      camera = new three.OrthographicCamera(frustumSize * aspectRatio / -2, frustumSize * aspectRatio / 2, frustumSize / 2, frustumSize / -2, 0.1, 2000)
+	  }
+    return {
+      scene: new three.Scene(),
+      camera: camera,
+      clock: new three.Clock()
+    }
+  },
 
   init(domNode, state, { controlType = 'trackball', rendererConfig = {}, waitForLoadComplete = true }) {
     // Wipe DOM
