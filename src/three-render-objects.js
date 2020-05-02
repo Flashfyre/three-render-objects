@@ -1,6 +1,7 @@
 import {
   WebGLRenderer,
   Scene,
+  OrthographicCamera,
   PerspectiveCamera,
   Raycaster,
   TextureLoader,
@@ -25,6 +26,7 @@ const three = window.THREE
   : {
   WebGLRenderer,
   Scene,
+  OrthographicCamera,
   PerspectiveCamera,
   Raycaster,
   TextureLoader,
