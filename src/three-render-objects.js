@@ -7,6 +7,7 @@ import {
   TextureLoader,
   Vector2,
   Vector3,
+  Box3,
   Color,
   Mesh,
   SphereGeometry,
@@ -32,6 +33,7 @@ const three = window.THREE
   TextureLoader,
   Vector2,
   Vector3,
+  Box3,
   Color,
   Mesh,
   SphereGeometry,
@@ -45,11 +47,12 @@ const three = window.THREE
   Clock
 };
 
-import ThreeTrackballControls from 'three-trackballcontrols';
-import OrbitControlsWrapper from 'three-orbit-controls';
-const ThreeOrbitControls = OrbitControlsWrapper(three);
-import FlyControlsWrapper from 'three-fly-controls';
-const ThreeFlyControls = (FlyControlsWrapper(three), three.FlyControls);
+import { TrackballControls as ThreeTrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
+import { OrbitControls as ThreeOrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { FlyControls as ThreeFlyControls } from 'three/examples/jsm/controls/FlyControls.js';
+
+import { EffectComposer as ThreeEffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass as ThreeRenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 
 import { parseToRgb, opacify } from 'polished';
 import TWEEN from '@tweenjs/tween.js';
@@ -67,7 +70,6 @@ export default Kapsule({
     showNavInfo: { default: true },
     skyRadius: { default: 50000 },
     objects: { default: [] },
-    postProcessingComposer: { triggerUpdate: false },
     enablePointerInteraction: {
       default: true,
       onChange(_, state) {
@@ -79,8 +81,10 @@ export default Kapsule({
     },
     lineHoverPrecision: { default: 1, triggerUpdate: false },
     hoverOrderComparator: { default: () => -1, triggerUpdate: false }, // keep existing order by default
+    hoverFilter: { default: () => true, triggerUpdate: false }, // exclude objects from interaction
     tooltipContent: { triggerUpdate: false },
     hoverDuringDrag: { default: false, triggerUpdate: false },
+    clickAfterDrag: { default: false, triggerUpdate: false },
     onHover: { default: () => {}, triggerUpdate: false },
     onClick: { default: () => {}, triggerUpdate: false },
     onRightClick: { triggerUpdate: false }
@@ -92,22 +96,23 @@ export default Kapsule({
         state.controls.update && state.controls.update(state.clock.getDelta()); // timedelta is required for fly controls
 
         state.postProcessingComposer
-          ? state.postProcessingComposer.render() // if using postprocessing, render only the output of the
+          ? state.postProcessingComposer.render() // if using postprocessing, switch the output to it
           : state.renderer.render(state.scene, state.camera);
+
+        state.extraRenderers.forEach(r => r.render(state.scene, state.camera));
 
         if (state.enablePointerInteraction) {
           // Update tooltip and trigger onHover events
           let topObject = null;
-          if (state.hoverDuringDrag || !state.controlsDragging) {
-            const raycaster = new three.Raycaster();
-            raycaster.params.Line.threshold = state.lineHoverPrecision; // set linePrecision
+          if (state.hoverDuringDrag || !state.isPointerDragging) {
+            const intersects = this.intersectingObjects(state.pointerPos.x, state.pointerPos.y)
+              .filter(d => state.hoverFilter(d.object))
+              .sort((a, b) => state.hoverOrderComparator(a.object, b.object));
 
-            raycaster.setFromCamera(state.mousePos, state.camera);
-            const intersects = raycaster.intersectObjects(state.objects, true)
-              .map(({ object }) => object)
-              .sort(state.hoverOrderComparator);
+            const topIntersect = intersects.length ? intersects[0] : null;
 
-            topObject = intersects.length ? intersects[0] : null;
+            topObject = topIntersect ? topIntersect.object : null;
+            state.intersectionPoint = topIntersect ? topIntersect.point : null;
           }
 
           if (topObject !== state.hoverObj) {
@@ -121,6 +126,10 @@ export default Kapsule({
       }
 
       return this;
+    },
+    getPointerPos: function(state) {
+      const { x, y } = state.pointerPos;
+      return { x, y };
     },
     cameraPosition: function(state, position, lookAt, transitionDuration) {
       const camera = state.camera;
@@ -178,9 +187,83 @@ export default Kapsule({
         );
       }
     },
+    zoomToFit: function (state, transitionDuration = 0, padding = 10, ...bboxArgs) {
+      return this.fitToBbox(this.getBbox(...bboxArgs), transitionDuration, padding);
+    },
+    fitToBbox: function (state, bbox, transitionDuration = 0, padding = 10) {
+      // based on https://discourse.threejs.org/t/camera-zoom-to-fit-object/936/24
+      const camera = state.camera;
+
+      if (bbox) {
+        const center = new three.Vector3(0, 0, 0); // reset camera aim to center
+        const maxBoxSide = Math.max(...Object.entries(bbox)
+          .map(([coordType, coords]) => Math.max(...coords.map(c => Math.abs(center[coordType] - c))))
+        ) * 2;
+
+        // find distance that fits whole bbox within padded fov
+        const paddedFov = (1 - (padding * 2 / state.height)) * camera.fov;
+        const fitHeightDistance = maxBoxSide / Math.atan(paddedFov * Math.PI / 180);
+        const fitWidthDistance = fitHeightDistance / camera.aspect;
+        const distance = Math.max(fitHeightDistance, fitWidthDistance);
+
+        if (distance > 0) {
+          const newCameraPosition = center.clone()
+            .sub(camera.position)
+            .normalize()
+            .multiplyScalar(-distance);
+
+          this.cameraPosition(newCameraPosition, center, transitionDuration);
+        }
+      }
+
+      return this;
+    },
+    getBbox: function (state, objFilter = () => true) {
+      const box = new three.Box3(new three.Vector3(0, 0, 0), new three.Vector3(0, 0, 0));
+      const objs = state.objects.filter(objFilter);
+
+      if (!objs.length) return null;
+
+      objs.forEach(obj => box.expandByObject(obj));
+
+      // extract global x,y,z min/max
+      return  Object.assign(...['x', 'y', 'z'].map(c => ({
+        [c]: [box.min[c], box.max[c]]
+      })));
+    },
+    getScreenCoords: function(state, x, y, z) {
+      const vec = new three.Vector3(x, y, z);
+      vec.project(this.camera()); // project to the camera plane
+      return { // align relative pos to canvas dimensions
+        x: (vec.x + 1) * state.width / 2,
+        y: -(vec.y - 1) * state.height / 2,
+      };
+    },
+    getSceneCoords: function(state, screenX, screenY, distance = 0) {
+      const relCoords = new three.Vector2(
+        (screenX / state.width) * 2 - 1,
+        -(screenY / state.height) * 2 + 1
+      );
+
+      const raycaster = new three.Raycaster();
+      raycaster.setFromCamera(relCoords, state.camera);
+      return Object.assign({}, raycaster.ray.at(distance, new three.Vector3()));
+    },
+    intersectingObjects: function(state, x, y) {
+      const relCoords = new three.Vector2(
+        (x / state.width) * 2 - 1,
+        -(y / state.height) * 2 + 1
+      );
+
+      const raycaster = new three.Raycaster();
+      raycaster.params.Line.threshold = state.lineHoverPrecision; // set linePrecision
+      raycaster.setFromCamera(relCoords, state.camera);
+      return raycaster.intersectObjects(state.objects, true);
+    },
     renderer: state => state.renderer,
     scene: state => state.scene,
     camera: state => state.camera,
+    postProcessingComposer: state => state.postProcessingComposer,
     controls: state => state.controls,
     tbControls: state => state.controls // to be deprecated
   },
@@ -201,12 +284,18 @@ export default Kapsule({
     }
   },
 
-  init(domNode, state, { controlType = 'trackball', rendererConfig = {}, waitForLoadComplete = true }) {
+  init(domNode, state, {
+    controlType = 'trackball',
+    rendererConfig = {},
+    extraRenderers = [],
+    waitForLoadComplete = true
+  } = {}) {
     // Wipe DOM
     domNode.innerHTML = '';
 
     // Add relative container
     domNode.appendChild(state.container = document.createElement('div'));
+    state.container.className = 'scene-container';
     state.container.style.position = 'relative';
 
     // Add nav info section
@@ -224,61 +313,83 @@ export default Kapsule({
     state.toolTipElem.classList.add('scene-tooltip');
     state.container.appendChild(state.toolTipElem);
 
-    // Capture mouse coords on move
-    state.mousePos = new three.Vector2();
-    state.mousePos.x = -2; // Initialize off canvas
-    state.mousePos.y = -2;
-    state.container.addEventListener("mousemove", ev => {
-      if (state.enablePointerInteraction) {
+    // Capture pointer coords on move or touchstart
+    state.pointerPos = new three.Vector2();
+    state.pointerPos.x = -2; // Initialize off canvas
+    state.pointerPos.y = -2;
+    ['pointermove', 'pointerdown'].forEach(evType =>
+      state.container.addEventListener(evType, ev => {
+        // track click state
+        evType === 'pointerdown' && (state.isPointerPressed = true);
 
-        // update the mouse pos
-        const offset = getOffset(state.container),
-          relPos = {
-            x: ev.pageX - offset.left,
-            y: ev.pageY - offset.top
-          };
-        state.mousePos.x = (relPos.x / state.width) * 2 - 1;
-        state.mousePos.y = -(relPos.y / state.height) * 2 + 1;
+        // detect point drag
+        !state.isPointerDragging && ev.type === 'pointermove'
+          && (ev.pressure > 0 || state.isPointerPressed) // ev.pressure always 0 on Safari, so we used the isPointerPressed tracker
+          && (ev.pointerType !== 'touch' || ev.movementX === undefined || [ev.movementX, ev.movementY].some(m => Math.abs(m) > 1)) // relax drag trigger sensitivity on touch events
+          && (state.isPointerDragging = true);
 
-        // Move tooltip
-        state.toolTipElem.style.top = `${relPos.y}px`;
-        state.toolTipElem.style.left = `${relPos.x}px`;
-        state.toolTipElem.style.transform = `translate(-${relPos.x / state.width * 100}%, 21px)`; // adjust horizontal position to not exceed canvas boundaries
-      }
+        if (state.enablePointerInteraction) {
+          // update the pointer pos
+          const offset = getOffset(state.container);
+          state.pointerPos.x = ev.pageX - offset.left;
+          state.pointerPos.y = ev.pageY - offset.top;
 
-      function getOffset(el) {
-        const rect = el.getBoundingClientRect(),
-          scrollLeft = window.pageXOffset || document.documentElement.scrollLeft,
-          scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-        return { top: rect.top + scrollTop, left: rect.left + scrollLeft };
-      }
-    }, false);
+          // Move tooltip
+          state.toolTipElem.style.top = `${state.pointerPos.y}px`;
+          state.toolTipElem.style.left = `${state.pointerPos.x}px`;
+          state.toolTipElem.style.transform = `translate(-${state.pointerPos.x / state.width * 100}%, 21px)`; // adjust horizontal position to not exceed canvas boundaries
+        }
+
+        function getOffset(el) {
+          const rect = el.getBoundingClientRect(),
+            scrollLeft = window.pageXOffset || document.documentElement.scrollLeft,
+            scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+          return { top: rect.top + scrollTop, left: rect.left + scrollLeft };
+        }
+      }, { passive: true })
+    );
 
     // Handle click events on objs
-    state.container.addEventListener('mouseup', ev => {
-      if (state.ignoreOneClick) {
-        state.ignoreOneClick = false; // because of controls end event
-        return;
+    state.container.addEventListener('pointerup', ev => {
+      state.isPointerPressed = false;
+      if (state.isPointerDragging) {
+        state.isPointerDragging = false;
+        if (!state.clickAfterDrag) return; // don't trigger onClick after pointer drag (camera motion via controls)
       }
 
-      if (ev.button === 0) { // left-click
-        state.onClick(state.hoverObj || null, ev); // trigger background clicks with null
-      }
+      requestAnimationFrame(() => { // trigger click events asynchronously, to allow hoverObj to be set (on frame)
+        if (ev.button === 0) { // left-click
+          state.onClick(state.hoverObj || null, ev, state.intersectionPoint) // trigger background clicks with null
+        }
 
-      if (ev.button === 2 && state.onRightClick) { // right-click
-        state.onRightClick(state.hoverObj || null, ev);
-      }
-    }, true); // use capture phase to prevent propagation blocking from controls (specifically for fly)
+        if (ev.button === 2 && state.onRightClick) { // right-click
+          state.onRightClick(state.hoverObj || null, ev, state.intersectionPoint)
+        }
+      });
+    }, { passive: true, capture: true }); // use capture phase to prevent propagation blocking from controls (specifically for fly)
 
     state.container.addEventListener('contextmenu', ev => {
-      if (state.onRightClick) ev.preventDefault(); // prevent default contextmenu behavior and allow mouseup to fire instead
-    }, false);
+      if (state.onRightClick) ev.preventDefault(); // prevent default contextmenu behavior and allow pointerup to fire instead
+    });
 
     // Setup renderer, camera and controls
     state.renderer = new three.WebGLRenderer(Object.assign({ antialias: true, alpha: true }, rendererConfig));
-    state.renderer.setPixelRatio(window.devicePixelRatio);
-
+    state.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio)); // clamp device pixel ratio
     state.container.appendChild(state.renderer.domElement);
+
+    // Setup extra renderers
+    state.extraRenderers = extraRenderers;
+    state.extraRenderers.forEach(r => {
+      // overlay them on top of main renderer
+      r.domElement.style.position = 'absolute';
+      r.domElement.style.top = '0px';
+      r.domElement.style.pointerEvents = 'none';
+      state.container.appendChild(r.domElement);
+    });
+
+    // configure post-processing composer
+    state.postProcessingComposer = new ThreeEffectComposer(state.renderer);
+    state.postProcessingComposer.addPass(new ThreeRenderPass(state.scene, state.camera)); // render scene as first pass
 
     // configure controls
     state.controls = new ({
@@ -296,11 +407,12 @@ export default Kapsule({
     if (controlType === 'trackball' || controlType === 'orbit') {
       state.controls.minDistance = 0.1;
       state.controls.maxDistance = state.skyRadius;
-      state.controls.addEventListener('start', () => state.controlsEngaged = true);
+      state.controls.addEventListener('start', () => {
+        state.controlsEngaged = true;
+      });
       state.controls.addEventListener('change', () => {
         if (state.controlsEngaged) {
           state.controlsDragging = true;
-          state.ignoreOneClick = true;
         }
       });
       state.controls.addEventListener('end', () => {
@@ -309,7 +421,8 @@ export default Kapsule({
       });
     }
 
-    state.renderer.setSize(state.width, state.height);
+    [state.renderer, state.postProcessingComposer, ...state.extraRenderers]
+      .forEach(r => r.setSize(state.width, state.height));
     state.camera.aspect = state.width/state.height;
     state.camera.updateProjectionMatrix();
 
@@ -328,7 +441,8 @@ export default Kapsule({
     if (state.width && state.height && (changedProps.hasOwnProperty('width') || changedProps.hasOwnProperty('height'))) {
       state.container.style.width = state.width;
       state.container.style.height = state.height;
-      state.renderer.setSize(state.width, state.height);
+      [state.renderer, state.postProcessingComposer, ...state.extraRenderers]
+        .forEach(r => r.setSize(state.width, state.height));
       state.camera.aspect = state.width/state.height;
       state.camera.updateProjectionMatrix();
     }

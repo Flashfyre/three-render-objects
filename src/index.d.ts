@@ -1,14 +1,11 @@
-import { Object3D, WebGLRendererParameters, Scene, Camera, WebGLRenderer } from 'three';
+import { Object3D, WebGLRendererParameters, Scene, Camera, WebGLRenderer, Renderer, Intersection } from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 
 export interface ConfigOptions {
   controlType?: 'trackball' | 'orbit' | 'fly';
   rendererConfig?: WebGLRendererParameters;
+  extraRenderers?: Renderer[];
   waitForLoadComplete?: boolean;
-}
-
-interface EffectComposer {
-  // simplified version of
-  render(): void;
 }
 
 type Accessor<In, Out> = Out | string | ((obj: In) => Out);
@@ -45,19 +42,22 @@ export interface ThreeRenderObjectsGenericInstance<ChainableInstance> {
   tick(): ChainableInstance;
   cameraPosition(): Coords;
   cameraPosition(position: Partial<Coords>, lookAt?: Coords, transitionMs?: number): ChainableInstance;
+  zoomToFit(durationMs?: number, padding?: number, objFilter?: (obj: Object3D) => boolean): ChainableInstance;
+  fitToBbox(bbox: { x: [number, number], y: [number, number], z: [number, number] }, durationMs?: number, padding?: number): ChainableInstance;
   postProcessingComposer(): EffectComposer;
-  postProcessingComposer(composer: EffectComposer): ChainableInstance;
   renderer(): WebGLRenderer;
   scene(): Scene;
   camera(): Camera;
   controls(): object;
 
   // Interaction
-  onClick(callback: (obj: object | null, event: MouseEvent) => void): ChainableInstance;
-  onRightClick(callback: (obj: object | null, event: MouseEvent) => void): ChainableInstance;
+  onClick(callback: (obj: object | null, event: MouseEvent, intersectionPoint: { x: number, y: number, z: number }) => void): ChainableInstance;
+  onRightClick(callback: (obj: object | null, event: MouseEvent, intersectionPoint: { x: number, y: number, z: number }) => void): ChainableInstance;
   onHover(callback: (obj: object | null, previousObj: object | null) => void): ChainableInstance;
   hoverOrderComparator(): Obj3DCompFn;
   hoverOrderComparator(compFn: Obj3DCompFn): ChainableInstance;
+  hoverFilter(): (obj: Object3D) => boolean;
+  hoverFilter(filterFn: (obj: Object3D) => boolean): ChainableInstance;
   lineHoverPrecision(): number;
   lineHoverPrecision(precision: number): ChainableInstance;
   tooltipContent(): Obj3DAccessor<string>;
@@ -66,6 +66,15 @@ export interface ThreeRenderObjectsGenericInstance<ChainableInstance> {
   enablePointerInteraction(enable: boolean): ChainableInstance;
   hoverDuringDrag(): boolean;
   hoverDuringDrag(enabled: boolean): ChainableInstance;
+  clickAfterDrag(): boolean;
+  clickAfterDrag(enabled: boolean): ChainableInstance;
+  getPointerPos(): { x: number, y: number };
+
+  // Utility
+  getBbox(objFilter?: (obj: Object3D) => boolean): { x: [number, number], y: [number, number], z: [number, number] };
+  getScreenCoords(x: number, y: number, z: number): { x: number, y: number; };
+  getSceneCoords(x: number, y: number, distance: number): { x: number, y: number, z: number };
+  intersectingObjects(x: number, y: number): Intersection[];
 }
 
 export type ThreeRenderObjectsInstance = ThreeRenderObjectsGenericInstance<ThreeRenderObjectsInstance>;

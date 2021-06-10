@@ -1,9 +1,7 @@
 import resolve from '@rollup/plugin-node-resolve';
 import commonJs from '@rollup/plugin-commonjs';
+import babel from '@rollup/plugin-babel';
 import postCss from 'rollup-plugin-postcss';
-import postCssSimpleVars from 'postcss-simple-vars';
-import postCssNested from 'postcss-nested';
-import babel from 'rollup-plugin-babel';
 import { terser } from "rollup-plugin-terser";
 import dts from 'rollup-plugin-dts';
 import { name, homepage, version, dependencies, peerDependencies } from './package.json';
@@ -34,12 +32,7 @@ export default [
       }
     ],
     plugins: [
-      postCss({
-        plugins: [
-          postCssSimpleVars(),
-          postCssNested()
-        ]
-      }),
+      postCss(),
       resolve(),
       commonJs(),
       babel({ exclude: 'node_modules/**' })
@@ -50,21 +43,25 @@ export default [
     output: [
       {
         format: 'cjs',
-        file: `dist/${name}.common.js`
+        file: `dist/${name}.common.js`,
+        exports: 'auto'
       },
       {
         format: 'es',
         file: `dist/${name}.module.js`
       }
     ],
-    external: [...Object.keys(dependencies || {}), ...Object.keys(peerDependencies || {})],
+    external: [
+      ...Object.keys(dependencies || {}),
+      ...Object.keys(peerDependencies || {}),
+      'three/examples/jsm/controls/TrackballControls.js',
+      'three/examples/jsm/controls/OrbitControls.js',
+      'three/examples/jsm/controls/FlyControls.js',
+      'three/examples/jsm/postprocessing/EffectComposer.js',
+      'three/examples/jsm/postprocessing/RenderPass.js'
+    ],
     plugins: [
-      postCss({
-        plugins: [
-          postCssSimpleVars(),
-          postCssNested()
-        ]
-      }),
+      postCss(),
       babel()
     ]
   },
