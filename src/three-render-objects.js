@@ -181,7 +181,7 @@ export default Kapsule({
 
       function getLookAt() {
         return Object.assign(
-          (new three.Vector3(0, 0, -1000))
+          (new three.Vector3(0, 0, camera.type === 'OrthographicCamera' ? 0 : -1000))
             .applyQuaternion(camera.quaternion)
             .add(camera.position)
         );
@@ -270,18 +270,18 @@ export default Kapsule({
 
   stateInit: options => {
     let camera;
-	  if (!options || !options.numDimensions || options.numDimensions >= 3) {
+	if (!options || !options.numDimensions || options.numDimensions >= 3) {
         camera = new three.PerspectiveCamera();
-	  } else {
+	} else {
       let aspectRatio = window.innerWidth / window.innerHeight;
       let frustumSize = 1000;
-      camera = new three.OrthographicCamera(frustumSize * aspectRatio / -2, frustumSize * aspectRatio / 2, frustumSize / 2, frustumSize / -2, 0.1, 2000)
-	  }
+      camera = new three.OrthographicCamera(frustumSize * aspectRatio / -2, frustumSize * aspectRatio / 2, frustumSize / 2, frustumSize / -2, 0.1, 2000);
+	}
     return {
       scene: new three.Scene(),
       camera: camera,
       clock: new three.Clock()
-    }
+    };
   },
 
   init(domNode, state, {
